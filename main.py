@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, UUID4, HttpUrl
+from sqlalchemy.ext.mutable import MutableList
+
 from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -69,7 +71,9 @@ class Watchlist(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    tickers = Column(JSON, default=list)
+    # tickers = Column(JSON, default=list)
+    tickers = Column(MutableList.as_mutable(JSON), default=list)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="watchlists")
