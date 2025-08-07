@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, UUID4
+from pydantic import BaseModel, UUID4, HttpUrl
 from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -12,6 +12,7 @@ import uuid
 from typing import List, Optional, Dict, Any
 import bcrypt
 from contextlib import contextmanager
+
 
 # Database setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./finance_portfolio.db"
@@ -94,9 +95,25 @@ class StockInfo(BaseModel):
     ticker: str
     name: str
     price: float
+    address: Optional[str] = None
     sector: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    exchange: Optional[str] = None
     market_cap: Optional[float] = None
     currency: Optional[str] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    pe_ratio: Optional[float] = None
+    forward_pe: Optional[float] = None
+    eps: Optional[float] = None
+    beta: Optional[float] = None
+    volume: Optional[int] = None
+    average_volume: Optional[int] = None
+    website: Optional[HttpUrl] = None
+    short_description: Optional[str] = None
+    is_etf: Optional[bool] = False
 
 class PositionAdd(BaseModel):
     ticker: str
@@ -190,19 +207,18 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 def get_stock_info(ticker: str) -> Dict[str, Any]:
     try:
         stock = yf.Ticker(ticker.upper())
-        print(f"stock: {stock.info}")
+        print(f"stock: {(stock.info.keys())}")
         # Try multiple methods to get stock data
         current_price = None
 
         info = {}
-        
+
         data = stock.history(period="1d")
-        print(f"{ticker} data:", data)
+        print(f"{ticker} data:", len(data), type(data))
         
         try:
             # Method 1: Try to get info first
             info = stock.info
-            print(f"info: {info}")
             if info and len(info) > 1:  # Check if info has meaningful data
                 current_price = info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')
         except:
@@ -237,10 +253,27 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
         return {
             "ticker": ticker.upper(),
             "name": name,
-            "price": float(current_price),
+            "address": info.get('address1'),
             "sector": info.get('sector', "N/A"),
+            "industry": info.get('industry', "N/A"),
+            "country": info.get('country', "N/A"),
+            "exchange": info.get('exchange', "N/A"),
             "market_cap": info.get('marketCap'),
-            "currency": info.get('currency', 'USD')
+            "currency": info.get('currency', 'USD'),
+            "price": float(current_price),
+            "52_week_high": info.get('fiftyTwoWeekHigh'),
+            "52_week_low": info.get('fiftyTwoWeekLow'),
+            "dividend_yield": info.get('dividendYield'),
+            "pe_ratio": info.get('trailingPE'),
+            "eps": info.get('trailingEps'),
+            "forward_pe": info.get('forwardPE'),
+            "beta": info.get('beta'),
+            "volume": info.get('volume'),
+            "average_volume": info.get('averageVolume'),
+            "website": info.get('website', "N/A"),
+            "logo_url": info.get('logo_url', None),  # some tickers have it
+            "short_description": info.get('longBusinessSummary')[:300] + "..." if info.get('longBusinessSummary') else None,
+            "is_etf": info.get('quoteType') == 'ETF'
         }
         
     except Exception as e:

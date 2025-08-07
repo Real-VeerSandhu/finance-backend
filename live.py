@@ -124,11 +124,17 @@ def research_stock(headers):
     if response.status_code == 200:
         stock_data = response.json()
         print(f"✅ Stock research successful!")
-        print(f"   📊 Company: {stock_data['name']}")
-        print(f"   💰 Price: ${stock_data['price']:.2f} {stock_data['currency']}")
-        print(f"   🏢 Sector: {stock_data['sector'] or 'N/A'}")
-        if stock_data['market_cap']:
-            print(f"   📈 Market Cap: ${stock_data['market_cap']:,}")
+        # print(f"   📊 Company: {stock_data['name']}")
+        # print(f"   💰 Price: ${stock_data['price']:.2f} {stock_data['currency']}")
+        # print(f"   🏢 Sector: {stock_data['sector'] or 'N/A'}")
+        # if stock_data['market_cap']:
+        #     print(f"   📈 Market Cap: ${stock_data['market_cap']:,}")
+        
+        for key, value in stock_data.items():
+            formatted_key = key.replace('_', ' ').title()
+            print(f"{formatted_key}: {value}")
+        
+        print("=" * 40)
     else:
         error_detail = response.json().get("detail", "Unknown error")
         print(f"❌ Stock research failed: {error_detail}")
