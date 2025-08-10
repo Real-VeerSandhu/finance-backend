@@ -1,87 +1,37 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, UUID4, HttpUrl
-from sqlalchemy.ext.mutable import MutableList
-
-from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, ForeignKey, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from supabase import create_client, Client
 from datetime import datetime, timedelta
 import jwt
 import yfinance as yf
-import sqlite3
 import uuid
 from typing import List, Optional, Dict, Any
 import bcrypt
-from contextlib import contextmanager
+import os
+from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 
 
-# Database setup
-SQLALCHEMY_DATABASE_URL = "sqlite:///./finance_portfolio.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY")
+
 
 # JWT Configuration
-SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # FastAPI setup
 app = FastAPI(title="Finance Portfolio API", version="1.0.0")
 security = HTTPBearer()
 
-# Database Models
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    username = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    portfolios = relationship("Portfolio", back_populates="user")
-    watchlists = relationship("Watchlist", back_populates="user")
-
-class Portfolio(Base):
-    __tablename__ = "portfolios"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    name = Column(String, default="Default Portfolio")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    user = relationship("User", back_populates="portfolios")
-    positions = relationship("Position", back_populates="portfolio", cascade="all, delete-orphan")
-
-class Position(Base):
-    __tablename__ = "positions"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    portfolio_id = Column(String, ForeignKey("portfolios.id"), nullable=False)
-    ticker = Column(String, nullable=False)
-    shares = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    portfolio = relationship("Portfolio", back_populates="positions")
-
-class Watchlist(Base):
-    __tablename__ = "watchlists"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    # tickers = Column(JSON, default=list)
-    tickers = Column(MutableList.as_mutable(JSON), default=list)
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    user = relationship("User", back_populates="watchlists")
-
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-# Pydantic Models
+# Pydantic Models (same as before)
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -143,15 +93,84 @@ class WatchlistResponse(BaseModel):
     tickers: List[str]
     created_at: datetime
 
-# Database dependency
-def get_db():
-    db = SessionLocal()
+# Database Table Creation Functions
+def create_tables():
+    """
+    Create tables in Supabase PostgreSQL database.
+    Run this once to set up your database schema.
+    """
+    
+    # Create users table
+    users_sql = """
+    CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        hashed_password TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    """
+    
+    # Create portfolios table
+    portfolios_sql = """
+    CREATE TABLE IF NOT EXISTS portfolios (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL DEFAULT 'Default Portfolio',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_portfolios_user_id ON portfolios(user_id);
+    """
+    
+    # Create positions table
+    positions_sql = """
+    CREATE TABLE IF NOT EXISTS positions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        portfolio_id UUID NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+        ticker TEXT NOT NULL,
+        shares INTEGER NOT NULL CHECK (shares > 0),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_positions_portfolio_id ON positions(portfolio_id);
+    CREATE INDEX IF NOT EXISTS idx_positions_ticker ON positions(ticker);
+    """
+    
+    # Create watchlists table
+    watchlists_sql = """
+    CREATE TABLE IF NOT EXISTS watchlists (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        tickers JSONB DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_watchlists_user_id ON watchlists(user_id);
+    """
+    
     try:
-        yield db
-    finally:
-        db.close()
+        # Execute each SQL statement
+        supabase.postgrest.rpc('exec_sql', {'sql': users_sql}).execute()
+        supabase.postgrest.rpc('exec_sql', {'sql': portfolios_sql}).execute()
+        supabase.postgrest.rpc('exec_sql', {'sql': positions_sql}).execute()
+        supabase.postgrest.rpc('exec_sql', {'sql': watchlists_sql}).execute()
+        
+        print("Tables created successfully!")
+        
+    except Exception as e:
+        print(f"Error creating tables: {e}")
+        # Alternative method if RPC doesn't work
+        print("If the above failed, run these SQL commands directly in your Supabase SQL editor:")
+        print("\n" + users_sql)
+        print("\n" + portfolios_sql)
+        print("\n" + positions_sql)
+        print("\n" + watchlists_sql)
 
-# Authentication functions
+# Authentication functions (same as before)
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -165,7 +184,7 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -175,60 +194,27 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    user = db.query(User).filter(User.username == username).first()
-    if user is None:
+    # Query user from Supabase
+    response = supabase.table("users").select("*").eq("username", username).execute()
+    if not response.data:
         raise HTTPException(status_code=401, detail="User not found")
-    return user
+    
+    return response.data[0]
 
-# # Stock data functions
-# def get_stock_info(ticker: str) -> Dict[str, Any]:
-#     try:
-#         stock = yf.Ticker(ticker.upper())
-#         info = stock.info
-        
-#         if not info or 'regularMarketPrice' not in info:
-#             # Try to get current price if info is incomplete
-#             hist = stock.history(period="1d")
-#             if hist.empty:
-#                 raise ValueError("Stock not found")
-#             current_price = hist['Close'].iloc[-1]
-#         else:
-#             current_price = info.get('regularMarketPrice', 0)
-        
-#         return {
-#             "ticker": ticker.upper(),
-#             "name": info.get('longName', info.get('shortName', ticker.upper())),
-#             "price": float(current_price),
-#             "sector": info.get('sector'),
-#             "market_cap": info.get('marketCap'),
-#             "currency": info.get('currency', 'USD')
-#         }
-#     except Exception as e:
-#         raise HTTPException(status_code=404, detail=f"Stock {ticker} not found or data unavailable")
-
-
-# Stock data functions
+# Stock data functions (same as before but cleaner)
 def get_stock_info(ticker: str) -> Dict[str, Any]:
     try:
         stock = yf.Ticker(ticker.upper())
-        print(f"stock: {(stock.info.keys())}")
-        # Try multiple methods to get stock data
         current_price = None
-
         info = {}
 
-        data = stock.history(period="1d")
-        print(f"{ticker} data:", len(data), type(data))
-        
         try:
-            # Method 1: Try to get info first
             info = stock.info
-            if info and len(info) > 1:  # Check if info has meaningful data
+            if info and len(info) > 1:
                 current_price = info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')
         except:
             pass
         
-        # Method 2: If info failed or price not found, try history
         if current_price is None:
             try:
                 hist = stock.history(period="5d")
@@ -237,7 +223,6 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
             except:
                 pass
         
-        # Method 3: Try fast_info as fallback
         if current_price is None:
             try:
                 fast_info = stock.fast_info
@@ -245,14 +230,10 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
             except:
                 pass
         
-        # If we still don't have a price, the stock likely doesn't exist
         if current_price is None or current_price <= 0:
             raise ValueError("Stock not found or invalid")
         
-        # Get name with fallbacks
-        name = (info.get('longName') or 
-                info.get('shortName') or 
-                ticker.upper())
+        name = (info.get('longName') or info.get('shortName') or ticker.upper())
         
         return {
             "ticker": ticker.upper(),
@@ -265,8 +246,8 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
             "market_cap": info.get('marketCap'),
             "currency": info.get('currency', 'USD'),
             "price": float(current_price),
-            "52_week_high": info.get('fiftyTwoWeekHigh'),
-            "52_week_low": info.get('fiftyTwoWeekLow'),
+            "fifty_two_week_high": info.get('fiftyTwoWeekHigh'),
+            "fifty_two_week_low": info.get('fiftyTwoWeekLow'),
             "dividend_yield": info.get('dividendYield'),
             "pe_ratio": info.get('trailingPE'),
             "eps": info.get('trailingEps'),
@@ -275,73 +256,105 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
             "volume": info.get('volume'),
             "average_volume": info.get('averageVolume'),
             "website": info.get('website', "N/A"),
-            "logo_url": info.get('logo_url', None),  # some tickers have it
             "short_description": info.get('longBusinessSummary')[:300] + "..." if info.get('longBusinessSummary') else None,
             "is_etf": info.get('quoteType') == 'ETF'
         }
         
     except Exception as e:
-        print(f"Error fetching stock data for {ticker}: {str(e)}")  # Debug logging
         raise HTTPException(status_code=404, detail=f"Stock {ticker} not found or data unavailable")
-
-
 
 # Auth endpoints
 @app.post("/auth/register", response_model=Token)
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+async def register(user_data: UserCreate):
     # Check if user exists
-    if db.query(User).filter((User.username == user_data.username) | (User.email == user_data.email)).first():
+    existing_user = supabase.table("users").select("*").or_(
+        f"username.eq.{user_data.username},email.eq.{user_data.email}"
+    ).execute()
+    
+    if existing_user.data:
         raise HTTPException(status_code=400, detail="Username or email already registered")
     
     # Create user
     hashed_pw = hash_password(user_data.password)
-    db_user = User(
-        username=user_data.username,
-        email=user_data.email,
-        hashed_password=hashed_pw
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    user_response = supabase.table("users").insert({
+        "username": user_data.username,
+        "email": user_data.email,
+        "hashed_password": hashed_pw
+    }).execute()
     
-    # Create default portfolio and watchlist
-    portfolio = Portfolio(user_id=db_user.id, name="Default Portfolio")
-    watchlist = Watchlist(user_id=db_user.id, tickers=[])
-    db.add(portfolio)
-    db.add(watchlist)
-    db.commit()
+    if not user_response.data:
+        raise HTTPException(status_code=400, detail="Failed to create user")
+    
+    user_id = user_response.data[0]["id"]
+    
+    # Create default portfolio
+    portfolio_response = supabase.table("portfolios").insert({
+        "user_id": user_id,
+        "name": "Default Portfolio"
+    }).execute()
+    
+    # Create default watchlist
+    watchlist_response = supabase.table("watchlists").insert({
+        "user_id": user_id,
+        "tickers": []
+    }).execute()
     
     # Create access token
-    access_token = create_access_token(data={"sub": db_user.username})
+    access_token = create_access_token(data={"sub": user_data.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/auth/login", response_model=Token)
-async def login(user_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_data.username).first()
-    if not user or not verify_password(user_data.password, user.hashed_password):
+async def login(user_data: UserLogin):
+    user_response = supabase.table("users").select("*").eq("username", user_data.username).execute()
+    
+    if not user_response.data:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    access_token = create_access_token(data={"sub": user.username})
+    user = user_response.data[0]
+    if not verify_password(user_data.password, user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    access_token = create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
 # Stock research endpoints
 @app.get("/research/{ticker}", response_model=StockInfo)
-async def get_stock_research(ticker: str, current_user: User = Depends(get_current_user)):
+async def get_stock_research(ticker: str, current_user: dict = Depends(get_current_user)):
     return get_stock_info(ticker)
 
 # Portfolio endpoints
 @app.get("/portfolio", response_model=PortfolioResponse)
-async def get_portfolio(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    portfolio = db.query(Portfolio).filter(Portfolio.user_id == current_user.id).first()
-    if not portfolio:
+async def get_portfolio(current_user: dict = Depends(get_current_user)):
+    # Get portfolio with positions
+    portfolio_response = supabase.table("portfolios").select(
+        "*, positions(*)"
+    ).eq("user_id", current_user["id"]).execute()
+    
+    if not portfolio_response.data:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    return portfolio
+    
+    portfolio = portfolio_response.data[0]
+    
+    # Format response
+    return {
+        "id": portfolio["id"],
+        "name": portfolio["name"],
+        "created_at": portfolio["created_at"],
+        "positions": [
+            {
+                "id": pos["id"],
+                "ticker": pos["ticker"],
+                "shares": pos["shares"],
+                "created_at": pos["created_at"]
+            }
+            for pos in portfolio.get("positions", [])
+        ]
+    }
 
 @app.post("/portfolio/add")
 async def add_position(
     position_data: PositionAdd, 
-    current_user: User = Depends(get_current_user), 
-    db: Session = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     # Validate ticker
     get_stock_info(position_data.ticker)
@@ -351,87 +364,100 @@ async def add_position(
         raise HTTPException(status_code=400, detail="Shares must be positive")
     
     # Get user's portfolio
-    portfolio = db.query(Portfolio).filter(Portfolio.user_id == current_user.id).first()
-    if not portfolio:
+    portfolio_response = supabase.table("portfolios").select("*").eq("user_id", current_user["id"]).execute()
+    if not portfolio_response.data:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     
+    portfolio_id = portfolio_response.data[0]["id"]
+    ticker_upper = position_data.ticker.upper()
+    
     # Check if position already exists
-    existing_position = db.query(Position).filter(
-        Position.portfolio_id == portfolio.id,
-        Position.ticker == position_data.ticker.upper()
-    ).first()
+    existing_position = supabase.table("positions").select("*").eq("portfolio_id", portfolio_id).eq("ticker", ticker_upper).execute()
     
-    if existing_position:
-        existing_position.shares += position_data.shares
+    if existing_position.data:
+        # Update existing position
+        position = existing_position.data[0]
+        new_shares = position["shares"] + position_data.shares
+        supabase.table("positions").update({"shares": new_shares}).eq("id", position["id"]).execute()
     else:
-        new_position = Position(
-            portfolio_id=portfolio.id,
-            ticker=position_data.ticker.upper(),
-            shares=position_data.shares
-        )
-        db.add(new_position)
+        # Create new position
+        supabase.table("positions").insert({
+            "portfolio_id": portfolio_id,
+            "ticker": ticker_upper,
+            "shares": position_data.shares
+        }).execute()
     
-    db.commit()
-    return {"message": f"Added {position_data.shares} shares of {position_data.ticker.upper()}"}
+    return {"message": f"Added {position_data.shares} shares of {ticker_upper}"}
 
 @app.post("/portfolio/remove")
 async def remove_position(
     position_data: PositionAdd,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     # Get user's portfolio
-    portfolio = db.query(Portfolio).filter(Portfolio.user_id == current_user.id).first()
-    if not portfolio:
+    portfolio_response = supabase.table("portfolios").select("*").eq("user_id", current_user["id"]).execute()
+    if not portfolio_response.data:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     
-    # Find existing position
-    position = db.query(Position).filter(
-        Position.portfolio_id == portfolio.id,
-        Position.ticker == position_data.ticker.upper()
-    ).first()
+    portfolio_id = portfolio_response.data[0]["id"]
+    ticker_upper = position_data.ticker.upper()
     
-    if not position:
+    # Find existing position
+    position_response = supabase.table("positions").select("*").eq("portfolio_id", portfolio_id).eq("ticker", ticker_upper).execute()
+    
+    if not position_response.data:
         raise HTTPException(status_code=404, detail="Position not found")
     
-    if position_data.shares >= position.shares:
+    position = position_response.data[0]
+    
+    if position_data.shares >= position["shares"]:
         # Remove entire position
-        db.delete(position)
-        message = f"Removed all shares of {position_data.ticker.upper()}"
+        supabase.table("positions").delete().eq("id", position["id"]).execute()
+        message = f"Removed all shares of {ticker_upper}"
     else:
         # Reduce shares
-        position.shares -= position_data.shares
-        message = f"Reduced {position_data.ticker.upper()} by {position_data.shares} shares"
+        new_shares = position["shares"] - position_data.shares
+        supabase.table("positions").update({"shares": new_shares}).eq("id", position["id"]).execute()
+        message = f"Reduced {ticker_upper} by {position_data.shares} shares"
     
-    db.commit()
     return {"message": message}
 
 # Watchlist endpoints
 @app.get("/watchlist", response_model=WatchlistResponse)
-async def get_watchlist(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    watchlist = db.query(Watchlist).filter(Watchlist.user_id == current_user.id).first()
-    if not watchlist:
+async def get_watchlist(current_user: dict = Depends(get_current_user)):
+    watchlist_response = supabase.table("watchlists").select("*").eq("user_id", current_user["id"]).execute()
+    
+    if not watchlist_response.data:
         raise HTTPException(status_code=404, detail="Watchlist not found")
-    return watchlist
+    
+    watchlist = watchlist_response.data[0]
+    return {
+        "id": watchlist["id"],
+        "tickers": watchlist.get("tickers", []),
+        "created_at": watchlist["created_at"]
+    }
 
 @app.post("/watchlist/add")
 async def add_to_watchlist(
     ticker_data: TickerAdd,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     # Validate ticker
     get_stock_info(ticker_data.ticker)
     
     # Get user's watchlist
-    watchlist = db.query(Watchlist).filter(Watchlist.user_id == current_user.id).first()
-    if not watchlist:
+    watchlist_response = supabase.table("watchlists").select("*").eq("user_id", current_user["id"]).execute()
+    
+    if not watchlist_response.data:
         raise HTTPException(status_code=404, detail="Watchlist not found")
     
+    watchlist = watchlist_response.data[0]
     ticker_upper = ticker_data.ticker.upper()
-    if ticker_upper not in watchlist.tickers:
-        watchlist.tickers.append(ticker_upper)
-        db.commit()
+    current_tickers = watchlist.get("tickers", [])
+    
+    if ticker_upper not in current_tickers:
+        current_tickers.append(ticker_upper)
+        supabase.table("watchlists").update({"tickers": current_tickers}).eq("id", watchlist["id"]).execute()
         return {"message": f"Added {ticker_upper} to watchlist"}
     else:
         return {"message": f"{ticker_upper} already in watchlist"}
@@ -439,18 +465,21 @@ async def add_to_watchlist(
 @app.post("/watchlist/remove")
 async def remove_from_watchlist(
     ticker_data: TickerAdd,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     # Get user's watchlist
-    watchlist = db.query(Watchlist).filter(Watchlist.user_id == current_user.id).first()
-    if not watchlist:
+    watchlist_response = supabase.table("watchlists").select("*").eq("user_id", current_user["id"]).execute()
+    
+    if not watchlist_response.data:
         raise HTTPException(status_code=404, detail="Watchlist not found")
     
+    watchlist = watchlist_response.data[0]
     ticker_upper = ticker_data.ticker.upper()
-    if ticker_upper in watchlist.tickers:
-        watchlist.tickers.remove(ticker_upper)
-        db.commit()
+    current_tickers = watchlist.get("tickers", [])
+    
+    if ticker_upper in current_tickers:
+        current_tickers.remove(ticker_upper)
+        supabase.table("watchlists").update({"tickers": current_tickers}).eq("id", watchlist["id"]).execute()
         return {"message": f"Removed {ticker_upper} from watchlist"}
     else:
         raise HTTPException(status_code=404, detail="Ticker not in watchlist")
@@ -458,7 +487,17 @@ async def remove_from_watchlist(
 # Health check
 @app.get("/")
 async def root():
-    return {"message": "Finance Portfolio API is running!"}
+    return {"message": "Finance Portfolio API with Supabase is running!"}
+
+# Database setup function - call this once to create tables
+@app.get("/setup-database")
+async def setup_database():
+    """
+    Call this endpoint once to create the database tables
+    Remove this endpoint in production
+    """
+    create_tables()
+    return {"message": "Database tables created successfully!"}
 
 if __name__ == "__main__":
     import uvicorn
