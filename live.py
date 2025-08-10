@@ -303,6 +303,7 @@ def run_automated_tests(headers):
     else:
         print(f"❌ Failed to get portfolio: {response.text}")
     
+    
     # Test 4: Add to watchlist
     print("\n4. ➕ Adding TSLA to watchlist...")
     ticker_data = {"ticker": "TSLA"}
