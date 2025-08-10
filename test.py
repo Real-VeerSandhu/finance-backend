@@ -32,6 +32,7 @@ def test_api():
     # Headers for authenticated requests
     headers = {"Authorization": f"Bearer {access_token}"}
     
+    
     # Test 2: Research a stock
     print("\n2. Researching AAPL stock...")
     response = requests.get(f"{BASE_URL}/research/AAPL", headers=headers)
